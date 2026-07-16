@@ -22,6 +22,8 @@ async def _list_quarantine(
     event_type: str | None = None,
     error_kind: str | None = None,
     integration_id: int | None = None,
+    status: str | None = None,
+    integration_name: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> Any:
@@ -32,6 +34,8 @@ async def _list_quarantine(
             "event_type": event_type,
             "error_kind": error_kind,
             "integration_id": integration_id,
+            "status": status,
+            "integration_name": integration_name,
             "limit": limit,
             "offset": offset,
         },
@@ -110,10 +114,24 @@ def specs() -> list[ToolSpec]:
                     "vendor": _string("Optional vendor filter."),
                     "event_type": _string("Optional event type filter."),
                     "error_kind": _string(
-                        "Optional error kind filter (e.g. 'mapping_failed', 'parse_error')."
+                        "Optional error kind filter. Valid values: 'parse', 'map', "
+                        "'validate', 'missing_mapping', 'missing_customer_id'. "
+                        "(Routing failures like 'unrouted' live in the destination DLQ, "
+                        "not here — see list_destination_dlq.)"
                     ),
                     "integration_id": _integer(
                         "Optional integration id filter.", minimum=1
+                    ),
+                    "status": {
+                        "type": "string",
+                        "description": (
+                            "Lifecycle filter. Backend default is 'pending' (awaiting "
+                            "reprocess); use 'reprocessed' or 'all' to see history."
+                        ),
+                        "enum": ["pending", "reprocessed", "all"],
+                    },
+                    "integration_name": _string(
+                        "Optional case-insensitive substring filter on integration name."
                     ),
                     "limit": _integer(
                         "Maximum results (1-500, default 50).",
@@ -129,8 +147,11 @@ def specs() -> list[ToolSpec]:
             name="reprocess_quarantine",
             description=(
                 "Reprocess one or more quarantined events: applies the current mapping "
-                "to each raw payload and dispatches the produced envelope to Wazuh. "
-                "Idempotent at the backend level — events already reprocessed return 409. "
+                "to each raw payload and routes the produced envelope through the "
+                "destination routing engine (first-match rules; unmatched events go to "
+                "the default destination if configured, otherwise to the 'unrouted' "
+                "DLQ). Idempotent at the backend level — events already reprocessed "
+                "return 409; expired events return 410; mapping failures return 422. "
                 f"Limit: {_MAX_BULK} events per call. Returns per-event status."
             ),
             input_schema=_object(

@@ -52,8 +52,11 @@ def specs() -> list[ToolSpec]:
                     ),
                     "status": {
                         "type": "string",
-                        "description": "Status filter — typically 'pending', 'ignored', or 'mapped'.",
-                        "enum": ["pending", "ignored", "mapped"],
+                        "description": (
+                            "Status filter — 'new' (observed but not yet triaged), "
+                            "'ignored', or 'mapped'."
+                        ),
+                        "enum": ["new", "ignored", "mapped"],
                     },
                     "limit": _integer(
                         "Maximum results (1-500, default 50).",

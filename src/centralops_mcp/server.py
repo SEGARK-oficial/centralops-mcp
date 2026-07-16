@@ -18,10 +18,16 @@ from centralops_mcp.client import CentralOpsAPIError, CentralOpsClient
 from centralops_mcp.tools._base import ToolSpec
 from centralops_mcp.tools import backfill as backfill_tools
 from centralops_mcp.tools import collectors as collectors_tools
+from centralops_mcp.tools import dashboard as dashboard_tools
+from centralops_mcp.tools import destinations as destinations_tools
+from centralops_mcp.tools import detections as detections_tools
 from centralops_mcp.tools import drift as drift_tools
 from centralops_mcp.tools import integrations as integrations_tools
 from centralops_mcp.tools import mapping as mapping_tools
+from centralops_mcp.tools import pipeline_health as pipeline_health_tools
 from centralops_mcp.tools import quarantine as quarantine_tools
+from centralops_mcp.tools import queries as queries_tools
+from centralops_mcp.tools import routes as routes_tools
 from centralops_mcp.tools import sophos_licenses as sophos_licenses_tools
 
 
@@ -37,6 +43,12 @@ def _build_specs(ack_cache: AckCache) -> dict[str, ToolSpec]:
         *mapping_tools.specs(ack_cache),
         *backfill_tools.specs(),
         *sophos_licenses_tools.specs(),
+        *pipeline_health_tools.specs(),
+        *destinations_tools.specs(),
+        *routes_tools.specs(),
+        *detections_tools.specs(),
+        *dashboard_tools.specs(),
+        *queries_tools.specs(),
     ]
     by_name: dict[str, ToolSpec] = {}
     for spec in specs:
@@ -60,7 +72,7 @@ def _error_text(message: str, **fields: Any) -> list[TextContent]:
 
 
 def _build_app(settings: Settings, specs: dict[str, ToolSpec]) -> Server:
-    app: Server = Server(SERVER_NAME)
+    app: Server = Server(SERVER_NAME, version=__version__)
 
     @app.list_tools()
     async def list_tools() -> list[Tool]:

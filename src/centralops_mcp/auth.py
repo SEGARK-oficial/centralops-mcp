@@ -24,8 +24,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-
-SERVER_VERSION = "0.2.0"
+from centralops_mcp import __version__ as SERVER_VERSION
 DEFAULT_BASE_URL = "http://localhost:3000/api"
 TOKEN_PREFIX = "copsk_"
 

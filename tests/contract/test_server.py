@@ -30,10 +30,43 @@ def test_tool_registry_has_expected_names():
         "list_mapping_audit",
         "list_backfill_jobs",
         "get_backfill_job",
+        "backfill_diagnostics",
+        "get_collector_cost_summary",
+        # Pipeline health
+        "get_pipeline_health",
+        "get_integration_pipeline_health",
+        # Destinations + lineage (ADR-0003/0008)
+        "list_destinations",
+        "get_destinations_health",
+        "get_destination_health",
+        "list_destination_dlq",
+        "get_destination_metrics",
+        "list_destination_audit",
+        "list_destination_lineage",
+        "get_event_lineage",
+        # Routing (ADR-0008)
+        "list_routes",
+        "get_routes_topology",
+        "get_routes_flow",
+        "get_route_health",
+        "get_route_metrics",
+        # Detections
+        "list_detections",
+        "get_detection",
+        # Dashboard
+        "get_dashboard_summary",
+        # Queries / search / audit history
+        "list_scheduled_queries",
+        "get_scheduled_query_history",
+        "list_search_history",
+        "get_search_result",
+        "list_audit_log",
+        "get_query_capabilities",
         # Mutating — safe
         "dry_run_mapping",
         "request_backfill",
         "reprocess_quarantine",
+        "cancel_backfill_job",
         # Destructive — gated
         "commit_mapping",
         # Helper

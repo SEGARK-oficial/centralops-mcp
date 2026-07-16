@@ -69,6 +69,18 @@ async def _get_backfill_job(
     return await client.get(f"/backfill-jobs/{job_id}")
 
 
+async def _cancel_backfill_job(
+    client: CentralOpsClient,
+    *,
+    job_id: str,
+) -> Any:
+    return await client.post(f"/backfill-jobs/{job_id}/cancel")
+
+
+async def _backfill_diagnostics(client: CentralOpsClient) -> Any:
+    return await client.get("/backfill-jobs/diagnostics")
+
+
 async def _wait_for_backfill_job(
     client: CentralOpsClient,
     *,
@@ -163,8 +175,9 @@ def specs() -> list[ToolSpec]:
         ToolSpec(
             name="get_backfill_job",
             description=(
-                "Fetch a single backfill job by id, including progress, events_collected, "
-                "events_dispatched, and last_error."
+                "Fetch a single backfill job by id, including progress_pct (0-100), "
+                "events_collected, events_dispatched, last_error, and the derived "
+                "stalled/stall_reason fields."
             ),
             input_schema=_object(
                 properties={
@@ -173,6 +186,33 @@ def specs() -> list[ToolSpec]:
                 required=["job_id"],
             ),
             handler=_get_backfill_job,
+        ),
+        ToolSpec(
+            name="cancel_backfill_job",
+            description=(
+                "Cancel a pending or running backfill job (the Celery task is revoked "
+                "cooperatively; the worker exits cleanly at the next page boundary). "
+                "Jobs already completed/failed/cancelled return 400. Requires the "
+                "integration.write permission. Returns the updated job."
+            ),
+            input_schema=_object(
+                properties={
+                    "job_id": _string("Backfill job id (uuid)."),
+                },
+                required=["job_id"],
+            ),
+            handler=_cancel_backfill_job,
+        ),
+        ToolSpec(
+            name="backfill_diagnostics",
+            description=(
+                "Diagnose 'why does backfill never run?': live Celery workers, "
+                "consumers of the collect.backfill queue, and the pending-job "
+                "backlog. Requires a global-admin token; returns 403 otherwise. "
+                "Use when a job reports stalled=true."
+            ),
+            input_schema=_object(properties={}),
+            handler=_backfill_diagnostics,
         ),
         ToolSpec(
             name="wait_for_backfill_job",

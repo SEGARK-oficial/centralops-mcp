@@ -31,6 +31,10 @@ class CentralOpsClient:
             "timeout": self._settings.request_timeout_s,
             "headers": {
                 "Authorization": self._settings.authorization_header,
+                # The backend audit log persists User-Agent — this is what lets
+                # operators tell MCP traffic apart from UI traffic. X-Client is
+                # kept as an extra informational header.
+                "User-Agent": self._settings.client_header,
                 "X-Client": self._settings.client_header,
                 "Accept": "application/json",
             },
@@ -104,7 +108,8 @@ class CentralOpsClient:
                 "API token rejected by CentralOps. "
                 "Verify CENTRALOPS_API_TOKEN: the token may be revoked, "
                 "expired, or generated for a different deployment. "
-                "Generate a new one at <base_url>/settings/tokens."
+                "Generate a new one at <host>/settings/tokens (your CentralOps "
+                "host, without the /api suffix)."
             )
         elif response.status_code == 403:
             # Fase 2: scopes — token may be valid but missing the required permission.

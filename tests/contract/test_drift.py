@@ -23,7 +23,7 @@ async def test_list_drift_fields_passes_filters(make_client, captured):
             c,
             vendor="sophos",
             event_type="sophos.alert",
-            status="pending",
+            status="new",
             limit=10,
             offset=0,
         )
@@ -35,7 +35,7 @@ async def test_list_drift_fields_passes_filters(make_client, captured):
     assert request.url.path == "/api/drift"
     assert request.url.params["vendor"] == "sophos"
     assert request.url.params["event_type"] == "sophos.alert"
-    assert request.url.params["status"] == "pending"
+    assert request.url.params["status"] == "new"
     assert request.url.params["limit"] == "10"
     assert request.headers["authorization"] == "Bearer copsk_test_aaaaaaaaaaaa"
     assert request.headers["x-client"].startswith("centralops-mcp/")

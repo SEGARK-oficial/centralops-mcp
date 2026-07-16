@@ -11,8 +11,27 @@ from centralops_mcp.tools._base import (
 )
 
 
-async def _list_integrations(client: CentralOpsClient) -> Any:
-    return await client.get("/integrations/")
+async def _list_integrations(
+    client: CentralOpsClient,
+    *,
+    organization_id: int | None = None,
+    platform: str | None = None,
+    include_inactive: bool = False,
+    name: str | None = None,
+    page: int | None = None,
+    size: int | None = None,
+) -> Any:
+    return await client.get(
+        "/integrations/",
+        params={
+            "organization_id": organization_id,
+            "platform": platform,
+            "include_inactive": "true" if include_inactive else None,
+            "name": name,
+            "page": page,
+            "size": size,
+        },
+    )
 
 
 async def _get_integration(client: CentralOpsClient, *, integration_id: int) -> Any:
@@ -37,10 +56,25 @@ async def _list_integration_alerts(
     integration_id: int,
     limit: int = 25,
     offset: int = 0,
+    severity: str | None = None,
+    hostname: str | None = None,
+    rule_id: str | None = None,
+    time_from: str | None = None,
+    time_to: str | None = None,
+    query: str | None = None,
 ) -> Any:
     return await client.get(
         f"/integrations/{integration_id}/alerts",
-        params={"limit": limit, "offset": offset},
+        params={
+            "limit": limit,
+            "offset": offset,
+            "severity": severity,
+            "hostname": hostname,
+            "rule_id": rule_id,
+            "time_from": time_from,
+            "time_to": time_to,
+            "query": query,
+        },
     )
 
 
@@ -54,19 +88,45 @@ def specs() -> list[ToolSpec]:
             name="list_integrations",
             description=(
                 "List CentralOps integrations (a vendor connection per row). Each item "
-                "has platform (sophos|wazuh|microsoft_defender|ninjaone), is_active, "
-                "auth_status, last_checked_at, last_successful_check_at, last_error and "
-                "the capabilities the provider exposes. Use this to find integration_id "
-                "values for the other tools."
+                "has a plugin-driven platform identifier (use list_supported_platforms "
+                "for the current registry), is_active, auth_status, last_checked_at, "
+                "last_successful_check_at, last_error and the capabilities the provider "
+                "exposes. Use this to find integration_id values for the other tools. "
+                "Unfiltered and unpaginated by default — pass page/size on large "
+                "deployments."
             ),
-            input_schema=_object(properties={}),
+            input_schema=_object(
+                properties={
+                    "organization_id": _integer(
+                        "Optional organization filter.", minimum=1
+                    ),
+                    "platform": _string("Optional platform filter (registry id)."),
+                    "include_inactive": {
+                        "type": "boolean",
+                        "description": "Include deactivated integrations (default false).",
+                    },
+                    "name": _string(
+                        "Optional case-insensitive substring filter on integration name."
+                    ),
+                    "page": _integer("1-based page number.", minimum=1),
+                    "size": _integer(
+                        "Page size (1-200). Omitted = no pagination (all rows).",
+                        minimum=1,
+                        maximum=200,
+                    ),
+                },
+            ),
             handler=_list_integrations,
         ),
         ToolSpec(
             name="get_integration",
             description=(
-                "Get a single integration with its full configuration (the secret fields "
-                "are masked unless the user has secret.read permission)."
+                "Get a single integration with its configuration. Config fields "
+                "(client_id, tenant_id, URLs, usernames, verify_ssl) come back null "
+                "unless the token has secret.read permission. Actual secrets "
+                "(passwords, client_secret) are NEVER returned — for Wazuh, the "
+                "manager_api_password_configured / indexer_password_configured "
+                "booleans indicate presence."
             ),
             input_schema=_object(
                 properties={
@@ -79,10 +139,13 @@ def specs() -> list[ToolSpec]:
         ToolSpec(
             name="get_integration_health",
             description=(
-                "Run the live health check for an integration: connectivity to the "
-                "vendor APIs, auth status, last sync, sub-component statuses (e.g. "
-                "Wazuh manager + indexer). Use this to answer 'is this vendor reachable "
-                "and healthy?'."
+                "Run the live health check for an integration. Returns the v2 "
+                "envelope: {schema_version: 2, platform, last_collection_at, "
+                "last_success_at, metrics[]} where each metric is data-driven "
+                "{id, label, value, severity: ok|warn|critical|unknown} — vendor "
+                "sub-components (e.g. Wazuh manager/indexer) appear as metric "
+                "entries such as id='manager_status'. Use this to answer 'is this "
+                "vendor reachable and healthy?'."
             ),
             input_schema=_object(
                 properties={
@@ -95,9 +158,14 @@ def specs() -> list[ToolSpec]:
         ToolSpec(
             name="get_integration_overview",
             description=(
-                "Aggregated dashboard view of an integration: counters, recent activity, "
-                "and per-stream collection summary. Best single call to answer 'how is "
-                "vendor X behaving right now?'."
+                "Aggregated view of an integration: the serialized integration, live "
+                "health (or an 'error' entry when the health check fails), a preview "
+                "of the 5 most recent alerts when the provider supports alerts:list "
+                "(alerts_preview is null and alerts_preview_error is set when the "
+                "vendor query fails), and licensed_products for Sophos child tenants "
+                "(null otherwise). Best single call to answer 'how is vendor X "
+                "behaving right now?'. For per-stream collection state, use "
+                "list_collection_state."
             ),
             input_schema=_object(
                 properties={
@@ -110,16 +178,33 @@ def specs() -> list[ToolSpec]:
         ToolSpec(
             name="list_integration_alerts",
             description=(
-                "List alerts already collected and normalized from the vendor for this "
-                "integration. Use this to inspect what has actually been processed (post "
-                "mapping). For raw vendor payloads, see get_mapping_samples or "
+                "Live query against the vendor's own alert store (e.g. the Wazuh "
+                "Indexer) via the provider API, normalized to the common AlertRead "
+                "shape. Requires the vendor to be reachable and configured — may fail "
+                "with INDEXER_NOT_CONFIGURED, INDEXER_CREDENTIALS_MISSING or "
+                "ALERTS_NOT_SUPPORTED (only providers with the alerts:list capability "
+                "support it). This does NOT read events processed by the CentralOps "
+                "pipeline — for raw vendor payloads see get_mapping_samples or "
                 "get_quarantine_event."
             ),
             input_schema=_object(
                 properties={
                     "integration_id": _integer("Integration id.", minimum=1),
-                    "limit": _integer("Maximum results (default 25).", minimum=1, maximum=200),
+                    "limit": _integer(
+                        "Maximum results (default 25; backend caps at 1000).",
+                        minimum=1,
+                        maximum=1000,
+                    ),
                     "offset": _integer("Pagination offset.", minimum=0),
+                    "severity": _string("Optional severity filter."),
+                    "hostname": _string("Optional agent hostname filter."),
+                    "rule_id": _string("Optional rule id filter."),
+                    "time_from": _string("Optional ISO 8601 lower bound."),
+                    "time_to": _string("Optional ISO 8601 upper bound."),
+                    "query": _string(
+                        "Optional free-text query. Requires the token to carry the "
+                        "query.run scope/permission."
+                    ),
                 },
                 required=["integration_id"],
             ),

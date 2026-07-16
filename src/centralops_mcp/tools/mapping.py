@@ -31,10 +31,14 @@ async def _list_mappings(
     client: CentralOpsClient,
     *,
     include_rules_count: bool = True,
+    only_active: bool = False,
 ) -> Any:
     return await client.get(
         "/mappings",
-        params={"include_rules_count": "true" if include_rules_count else "false"},
+        params={
+            "include_rules_count": "true" if include_rules_count else "false",
+            "only_active": "true" if only_active else "false",
+        },
     )
 
 
@@ -52,10 +56,16 @@ async def _get_mapping_samples(
     vendor: str,
     event_type: str,
     limit: int = 10,
+    organization_id: int | None = None,
 ) -> Any:
     return await client.get(
         "/mappings/samples",
-        params={"vendor": vendor, "event_type": event_type, "limit": limit},
+        params={
+            "vendor": vendor,
+            "event_type": event_type,
+            "limit": limit,
+            "org_id": organization_id,
+        },
     )
 
 
@@ -113,6 +123,7 @@ def _make_dry_run_handler(ack_cache: AckCache):
         event_type: str | None = None,
         raw_events: list[dict[str, Any]] | None = None,
         limit: int = 100,
+        organization_id: int | None = None,
     ) -> Any:
         body: dict[str, Any] = {"rules": rules, "limit": limit}
         if vendor:
@@ -121,13 +132,15 @@ def _make_dry_run_handler(ack_cache: AckCache):
             body["event_type"] = event_type
         if raw_events is not None:
             body["raw_events"] = raw_events
+        if organization_id is not None:
+            body["organization_id"] = organization_id
         result = await client.post("/mappings/dry-run", json=body)
 
         ack_token: str | None = None
         if definition_id:
             ack_token = ack_cache.issue(definition_id, rules)
 
-        return {
+        response: dict[str, Any] = {
             "dry_run": result,
             "ack_token": ack_token,
             "ack_token_note": (
@@ -137,6 +150,21 @@ def _make_dry_run_handler(ack_cache: AckCache):
                 else "No ack_token issued: pass `definition_id` to enable commit gating."
             ),
         }
+        # Fail-closed sample loading: a global-scope token with no organization
+        # gets sample_size=0, which silently degrades the dry-run to syntax-only
+        # validation. Surface that instead of letting the agent assume coverage.
+        if (
+            raw_events is None
+            and isinstance(result, dict)
+            and result.get("sample_size") == 0
+        ):
+            response["warning"] = (
+                "sample_size=0 — no reservoir samples were exercised, so this "
+                "dry-run only validated rule syntax. If you are using a "
+                "global-scope token, pass organization_id to pick the tenant "
+                "whose sample reservoir should be used, or provide raw_events."
+            )
+        return response
 
     return _dry_run_mapping
 
@@ -169,7 +197,9 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
                 "actually send for this event type?' — the items are the original JSON "
                 "captured by the collector before normalization. Use the output to "
                 "build or fix mapping rules. Returns up to `limit` recent items; older "
-                "samples roll out of the reservoir."
+                "samples roll out of the reservoir. NOTE: the reservoir is org-scoped "
+                "and fail-closed — a global-scope token with no organization always "
+                "sees an empty reservoir unless organization_id is provided."
             ),
             input_schema=_object(
                 properties={
@@ -179,6 +209,11 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
                         "Number of samples to return (1-100, default 10).",
                         minimum=1,
                         maximum=100,
+                    ),
+                    "organization_id": _integer(
+                        "Global scope only: the tenant whose sample reservoir to read. "
+                        "Ignored for org-scoped tokens.",
+                        minimum=1,
                     ),
                 },
                 required=["vendor", "event_type"],
@@ -232,7 +267,7 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
                     "offset": _integer("Pagination offset.", minimum=0),
                     "action": _string(
                         "Optional filter (e.g. 'create_version', 'rollback', "
-                        "'ignore_field', 'mark_mapped')."
+                        "'ignore_field', 'mark_mapped', 'delete_field')."
                     ),
                     "username": _string("Optional username filter."),
                     "from_ts": _string("Optional ISO 8601 lower bound."),
@@ -254,6 +289,14 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
                     "include_rules_count": {
                         "type": "boolean",
                         "description": "If true, include the count of rules in each current version.",
+                    },
+                    "only_active": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, only mappings whose vendor has an active "
+                            "integration in the caller's scope (the UI default). "
+                            "Default false = full catalog."
+                        ),
                     },
                 },
             ),
@@ -304,6 +347,13 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
                         "minimum": 1,
                         "maximum": 500,
                     },
+                    "organization_id": _integer(
+                        "Global scope only: the tenant whose sample reservoir feeds "
+                        "the dry-run. Without it a global token with no organization "
+                        "gets sample_size=0 (syntax-only validation). Ignored for "
+                        "org-scoped tokens.",
+                        minimum=1,
+                    ),
                 },
                 required=["rules"],
             ),
