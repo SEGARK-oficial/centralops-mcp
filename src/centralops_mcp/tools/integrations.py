@@ -50,34 +50,6 @@ async def _get_integration_overview(
     return await client.get(f"/integrations/{integration_id}/overview")
 
 
-async def _list_integration_alerts(
-    client: CentralOpsClient,
-    *,
-    integration_id: int,
-    limit: int = 25,
-    offset: int = 0,
-    severity: str | None = None,
-    hostname: str | None = None,
-    rule_id: str | None = None,
-    time_from: str | None = None,
-    time_to: str | None = None,
-    query: str | None = None,
-) -> Any:
-    return await client.get(
-        f"/integrations/{integration_id}/alerts",
-        params={
-            "limit": limit,
-            "offset": offset,
-            "severity": severity,
-            "hostname": hostname,
-            "rule_id": rule_id,
-            "time_from": time_from,
-            "time_to": time_to,
-            "query": query,
-        },
-    )
-
-
 async def _list_supported_platforms(client: CentralOpsClient) -> Any:
     return await client.get("/integrations/platforms")
 
@@ -159,13 +131,13 @@ def specs() -> list[ToolSpec]:
             name="get_integration_overview",
             description=(
                 "Aggregated view of an integration: the serialized integration, live "
-                "health (or an 'error' entry when the health check fails), a preview "
-                "of the 5 most recent alerts when the provider supports alerts:list "
-                "(alerts_preview is null and alerts_preview_error is set when the "
-                "vendor query fails), and licensed_products for Sophos child tenants "
-                "(null otherwise). Best single call to answer 'how is vendor X "
-                "behaving right now?'. For per-stream collection state, use "
-                "list_collection_state."
+                "health (or an 'error' entry when the health check fails), and "
+                "licensed_products for Sophos child tenants (null otherwise). Best "
+                "single call to answer 'how is vendor X behaving right now?'. For "
+                "per-stream collection state, use list_collection_state. To search "
+                "the vendor's own event store, use the federated query tools "
+                "(query jobs) instead — the legacy per-integration alerts listing "
+                "was removed from the backend."
             ),
             input_schema=_object(
                 properties={
@@ -174,41 +146,6 @@ def specs() -> list[ToolSpec]:
                 required=["integration_id"],
             ),
             handler=_get_integration_overview,
-        ),
-        ToolSpec(
-            name="list_integration_alerts",
-            description=(
-                "Live query against the vendor's own alert store (e.g. the Wazuh "
-                "Indexer) via the provider API, normalized to the common AlertRead "
-                "shape. Requires the vendor to be reachable and configured — may fail "
-                "with INDEXER_NOT_CONFIGURED, INDEXER_CREDENTIALS_MISSING or "
-                "ALERTS_NOT_SUPPORTED (only providers with the alerts:list capability "
-                "support it). This does NOT read events processed by the CentralOps "
-                "pipeline — for raw vendor payloads see get_mapping_samples or "
-                "get_quarantine_event."
-            ),
-            input_schema=_object(
-                properties={
-                    "integration_id": _integer("Integration id.", minimum=1),
-                    "limit": _integer(
-                        "Maximum results (default 25; backend caps at 1000).",
-                        minimum=1,
-                        maximum=1000,
-                    ),
-                    "offset": _integer("Pagination offset.", minimum=0),
-                    "severity": _string("Optional severity filter."),
-                    "hostname": _string("Optional agent hostname filter."),
-                    "rule_id": _string("Optional rule id filter."),
-                    "time_from": _string("Optional ISO 8601 lower bound."),
-                    "time_to": _string("Optional ISO 8601 upper bound."),
-                    "query": _string(
-                        "Optional free-text query. Requires the token to carry the "
-                        "query.run scope/permission."
-                    ),
-                },
-                required=["integration_id"],
-            ),
-            handler=_list_integration_alerts,
         ),
         ToolSpec(
             name="list_supported_platforms",

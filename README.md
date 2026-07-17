@@ -14,7 +14,7 @@
 ---
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes a
-curated subset of the CentralOps HTTP API as **53 typed tools**, so an AI agent
+curated subset of the CentralOps HTTP API as **52 typed tools**, so an AI agent
 (Claude Code, or any MCP client) can operate the pipeline like a SOC engineer:
 inspect what a vendor is actually sending, author and dry-run mapping rules, follow
 an event's delivery lineage, and reprocess quarantined events — with the destructive
@@ -64,7 +64,7 @@ Restart the client and run `/mcp` (Claude Code) to confirm the tools are listed.
 
 ## Tools
 
-53 tools, grouped by what they let the agent see or do. Everything is read-only
+52 tools, grouped by what they let the agent see or do. Everything is read-only
 except the five tools listed under **Mutating** and **Destructive**.
 
 ### Vendor-side visibility
@@ -76,8 +76,7 @@ How each vendor is connected, healthy and behaving.
 | `list_integrations` | Vendors connected — status, last_error, capabilities. Filterable (`platform`, `organization_id`, `name`) and paginated (`page`/`size`). |
 | `get_integration` | One integration's configuration. Config fields need `secret.read`; real secrets are never returned. |
 | `get_integration_health` | Live health check — v2 envelope with data-driven `metrics[]` (`id`, `label`, `value`, `severity`). |
-| `get_integration_overview` | Serialized integration + live health + 5-alert preview + `licensed_products` (Sophos child tenants). |
-| `list_integration_alerts` | **Live** query against the vendor's own alert store (e.g. Wazuh Indexer), with severity/host/rule/time filters. |
+| `get_integration_overview` | Serialized integration + live health + `licensed_products` (Sophos child tenants). |
 | `list_supported_platforms` | Platform identifiers from the plugin-driven provider registry. |
 | `get_sophos_licenses` | Licensed Sophos products for a child tenant (e.g. explain a 403 on detections). |
 
@@ -231,7 +230,7 @@ The trailing `sleep` keeps stdin open long enough for the second response:
       centralops-mcp:dev
 ```
 
-You should see two JSON-RPC responses; the second lists all 53 tools with their
+You should see two JSON-RPC responses; the second lists all 52 tools with their
 schemas.
 
 ## Contributing

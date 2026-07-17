@@ -14,7 +14,6 @@ def test_tool_registry_has_expected_names():
         "get_integration",
         "get_integration_health",
         "get_integration_overview",
-        "list_integration_alerts",
         "list_supported_platforms",
         "list_collector_vendors",
         "list_collection_state",
