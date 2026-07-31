@@ -150,8 +150,16 @@ def specs() -> list[ToolSpec]:
                 "Create a backfill job for a window of historical events. Window must be "
                 "<= 90 days and from_ts cannot be more than 90 days in the past. Streams "
                 "must be supported by the integration's vendor. Returns the created job "
-                "(status starts as 'pending'). Use wait_for_backfill_job to follow it."
+                "(status starts as 'pending'). Use wait_for_backfill_job to follow it.\n\n"
+                "COSTS REAL RESOURCES: this replays vendor API calls and consumes "
+                "the tenant's API quota and rate-limit budget. NOT idempotent — "
+                "each call enqueues another job. Check list_backfill_jobs for an "
+                "equivalent job before creating one, and only run it on explicit "
+                "human request."
             ),
+            read_only=False,
+            destructive=True,
+            idempotent=False,
             input_schema=_object(
                 properties={
                     "integration_id": _integer("Integration id.", minimum=1),
@@ -193,8 +201,14 @@ def specs() -> list[ToolSpec]:
                 "Cancel a pending or running backfill job (the Celery task is revoked "
                 "cooperatively; the worker exits cleanly at the next page boundary). "
                 "Jobs already completed/failed/cancelled return 400. Requires the "
-                "integration.write permission. Returns the updated job."
+                "integration.write permission. Returns the updated job.\n\n"
+                "Stops work in progress: pages not yet collected when the worker "
+                "exits are simply not collected, and the job cannot be resumed — "
+                "a new backfill must be requested. Only run on explicit human "
+                "request."
             ),
+            read_only=False,
+            destructive=True,
             input_schema=_object(
                 properties={
                     "job_id": _string("Backfill job id (uuid)."),

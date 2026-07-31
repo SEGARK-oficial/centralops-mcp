@@ -152,8 +152,15 @@ def specs() -> list[ToolSpec]:
                 "the default destination if configured, otherwise to the 'unrouted' "
                 "DLQ). Idempotent at the backend level — events already reprocessed "
                 "return 409; expired events return 410; mapping failures return 422. "
-                f"Limit: {_MAX_BULK} events per call. Returns per-event status."
+                f"Limit: {_MAX_BULK} events per call. Returns per-event status.\n\n"
+                "DISPATCHES TO EXTERNAL SYSTEMS: a successfully reprocessed event "
+                "is delivered to real destinations (syslog, SIEM, data lake) and "
+                "cannot be recalled. Confirm the mapping is actually fixed — via "
+                "dry_run_mapping — before reprocessing, or you will ship the same "
+                "malformed events downstream. Only run on explicit human request."
             ),
+            read_only=False,
+            destructive=True,
             input_schema=_object(
                 properties={
                     "event_ids": {

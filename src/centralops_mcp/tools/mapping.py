@@ -12,15 +12,57 @@ from centralops_mcp.tools._base import (
 )
 
 
+#: The `source` grammar is the single most under-documented part of the DSL: the
+#: engine compiles it with `jmespath.compile()` and applies NO allow-list, so the
+#: full JMESPath language is available — but nothing told an agent that, so
+#: generated rules stayed at trivial dot-paths and gave up on messy vendor data.
+_SOURCE_GRAMMAR = (
+    "`source` is a FULL JMESPath expression, not just a field path. The engine "
+    "compiles it with jmespath.compile() and applies no allow-list, so every "
+    "JMESPath construct works:\n"
+    "  - dot-path: `severity`, `device.name`  <- prefer these, see performance note\n"
+    "  - or-fallback: `createdAt || raisedAt`\n"
+    "  - filters, to skip vendor placeholder values: "
+    "`[data.win.eventdata.param2][?@!='-']|[0]` (Windows sends '-' for empty)\n"
+    "  - functions: `to_number(data.win.eventdata.ipPort)`, `length(items)`, "
+    "`sort_by(...)`, `join(...)`, `keys(...)`\n"
+    "  - combined: "
+    "`([data.win.eventdata.subStatus][?@!='0x0']|[0]) || data.win.eventdata.status`\n"
+    "CENTRALOPS-SPECIFIC: a `source` starting with `_` does NOT read the raw "
+    "event — it reads the `extracted` dict produced by `preprocess`. This is a "
+    "CentralOps convention, not JMESPath.\n"
+    "PERFORMANCE: only plain ASCII dot-paths (`^[A-Za-z_][A-Za-z0-9_]*(\\.…)*$`) "
+    "use the fast resolver. Any filter, pipe or function falls back to the "
+    "JMESPath visitor, which profiling measured at 64% of cumulative normalize "
+    "time on a large mapping. Use the expressive forms where they earn it (a "
+    "placeholder filter that a dot-path cannot express), not by habit."
+)
+
 _RULES_SCHEMA = {
     "type": "object",
     "description": (
-        "DSL v2 mapping rules. Shape: {preprocess?: array, rules: array}. "
-        "Each rule has at minimum a 'target' (e.g. 'normalized.severity_id') and one "
-        "of 'source' (JMESPath), 'const' (literal), or 'kind: array_builder'."
+        "DSL v2 mapping rules. Shape: {preprocess?: array, rules: array}.\n\n"
+        "Each rule needs a 'target' (dotted path into the output envelope, e.g. "
+        "'normalized.severity_id') and exactly ONE value source: 'source' "
+        "(JMESPath), 'const' (literal), or 'kind: array_builder'. Setting both "
+        "'source' and 'const' is rejected at validation time.\n\n"
+        "Optional per-rule keys, applied in this order: 'default' (used when the "
+        "source resolves empty — note it BYPASSES pre_cast and value_map, and "
+        "only type_cast is applied to it), 'pre_cast' (normalize before lookup, "
+        "e.g. 'lowercase', 'to_str'), 'value_map' (dict translating vendor values "
+        "to OCSF enums), 'type_cast' (final coercion), 'fallback_source' "
+        "(alternative JMESPath list), 'required' (bool).\n\n" + _SOURCE_GRAMMAR
     ),
     "properties": {
-        "preprocess": {"type": "array", "items": {"type": "object"}},
+        "preprocess": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": (
+                "Optional pre-extraction steps that populate the `extracted` "
+                "dict, referenced by rules whose `source` starts with `_`. Use "
+                "for parsing embedded JSON/CSV blobs before mapping them."
+            ),
+        },
         "rules": {"type": "array", "items": {"type": "object"}},
     },
     "required": ["rules"],
@@ -305,8 +347,22 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
         ToolSpec(
             name="get_mapping",
             description=(
-                "Fetch a mapping definition with its full version history. Returns "
-                "the current rules and an immutable list of past versions."
+                "Fetch a mapping definition with its full version history. "
+                "Returns the current rules and an immutable list of past "
+                "versions.\n\n"
+                "THIS IS THE SOURCE OF TRUTH for what production applies. "
+                "Mapping definitions are seeded from repository default JSON "
+                "files only on first creation; any later edit through the UI or "
+                "commit_mapping creates a new version and the seed never touches "
+                "that definition again. Live rules therefore diverge from the "
+                "files in the repo — never infer production behavior from those "
+                "files.\n\n"
+                "SIZE WARNING: the response carries EVERY version in full, not "
+                "just the current one. On a mature definition (100+ rules across "
+                "several versions) this is a large payload that can exhaust a "
+                "context window. If you only need the current rules, read the "
+                "first version entry and discard the rest, or use "
+                "diff_mapping_versions to compare two specific versions instead."
             ),
             input_schema=_object(
                 properties={
@@ -319,10 +375,23 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
         ToolSpec(
             name="dry_run_mapping",
             description=(
-                "Validate and dry-run mapping rules against the sample reservoir without "
-                "persisting anything. Pass `definition_id` to receive an ack_token bound "
-                "to these exact rules — the token is required by commit_mapping. The "
-                "token expires in 5 minutes and can only be consumed once."
+                "Validate and dry-run mapping rules against the sample reservoir "
+                "without persisting anything. Read-only despite being a POST. "
+                "Pass `definition_id` to receive an ack_token bound to these "
+                "exact rules — required by commit_mapping, expires in 5 minutes, "
+                "single-use.\n\n"
+                "WHAT 'PASSED' MEANS — read this before reporting a result. This "
+                "tool reports whether the RULES EXECUTED, not whether the output "
+                "is valid OCSF. It does NOT return ocsf_validation_stats or "
+                "mapped_field_ratio. '10/10 passed' means no rule crashed and no "
+                "required target came out empty; it does NOT mean the events "
+                "conform to OCSF 1.8, that class_uid/activity_id are correct for "
+                "the event, or that any field landed in the right OCSF object. "
+                "Never claim OCSF conformance on the strength of a dry-run.\n\n"
+                "Also check the response: `sample_size: 0` means the reservoir "
+                "was empty (usually a global-scope token with no "
+                "`organization_id`), which silently degrades this to syntax-only "
+                "validation. A `warning` field is added when that happens."
             ),
             input_schema=_object(
                 properties={
@@ -366,8 +435,17 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
                 "downstream collectors will start applying the new rules within ~30s. "
                 "Requires a fresh ack_token from dry_run_mapping with matching "
                 "definition_id and rules. Backend re-validates and re-runs dry-run on "
-                "commit, so this is also a defense-in-depth check."
+                "commit, so this is also a defense-in-depth check.\n\n"
+                "NOT IDEMPOTENT: every call creates another version. Do not "
+                "retry on an ambiguous result — call get_mapping first to see "
+                "whether the version already landed.\n\n"
+                "Requires explicit human intent. This is how you change what "
+                "production does; it is never the way to test an idea — use "
+                "dry_run_mapping for that."
             ),
+            read_only=False,
+            destructive=True,
+            idempotent=False,
             input_schema=_object(
                 properties={
                     "definition_id": _string("Mapping definition id (uuid)."),

@@ -9,7 +9,7 @@ from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import TextContent, Tool, ToolAnnotations
 
 from centralops_mcp import __version__
 from centralops_mcp.ack_cache import AckCache, AckTokenError
@@ -32,6 +32,77 @@ from centralops_mcp.tools import sophos_licenses as sophos_licenses_tools
 
 
 SERVER_NAME = "centralops-mcp"
+
+#: Sent to the client on initialize. This is the ONLY place an agent learns the
+#: shape of the platform before it starts calling tools, so it carries the
+#: cross-cutting rules that no single tool description can own: scope semantics,
+#: which tools write, and the two silent-degradation traps (empty reservoir,
+#: dry-run that does not measure OCSF conformance).
+SERVER_INSTRUCTIONS = """\
+CentralOps is a security data pipeline: collectors pull events from vendors
+(Sophos, Wazuh, CrowdStrike, Defender, Okta, Entra ID, FortiGate, Veeam, ...),
+a declarative mapping engine normalizes them to OCSF 1.8, and routes dispatch
+them to destinations (syslog, Splunk, Elastic, ClickHouse, Security Lake, ...).
+
+## Orientation: which tool answers which question
+
+- "What is connected / is it healthy?" -> list_integrations, get_integration_health,
+  get_pipeline_health, list_collection_state.
+- "What does this vendor actually send?" -> get_mapping_samples (raw vendor JSON,
+  pre-normalization). This is the ground truth for authoring rules.
+- "What fields are we ignoring?" -> list_drift_fields, discover_mapping_fields.
+- "How is this vendor normalized?" -> list_mappings, then get_mapping.
+- "Did normalization fail?" -> list_quarantine, get_quarantine_event.
+- "Where did this event go?" -> get_event_lineage, list_destination_lineage.
+- "Is data being dropped or delayed?" -> get_route_health, list_destination_dlq,
+  list_collection_state (collection lag).
+
+## Scope: read this before trusting an empty result
+
+Every call is scoped by the token. An ORG-SCOPED token sees only its tenant.
+A GLOBAL-SCOPED token sees the control plane but, for tenant-owned data, is
+FAIL-CLOSED: it returns an EMPTY result rather than aggregating across tenants.
+
+This matters most for the sample reservoir. get_mapping_samples and
+dry_run_mapping with a global token and no `organization_id` return
+`sample_size: 0` and NOT an error. Empty here means "you did not name a tenant",
+not "there is no data". Pass `organization_id` whenever a reservoir-backed call
+comes back empty.
+
+## Writes: 4 of these tools change state, the rest only read
+
+Read-only (safe to explore freely): everything not listed below, including
+dry_run_mapping — it is an HTTP POST but persists nothing.
+
+State-changing, and each needs explicit human intent before you call it:
+- commit_mapping — promotes a new mapping version; live collectors pick it up in
+  ~30s. NOT idempotent: each call creates another version. Requires an ack_token
+  minted by dry_run_mapping for the same definition_id AND the same rules.
+- request_backfill — enqueues a re-collection job; costs vendor API quota.
+- cancel_backfill_job — stops a running job.
+- reprocess_quarantine — re-injects a quarantined event into the pipeline.
+
+Never call these to "verify" or "test" something. To test a mapping, use
+dry_run_mapping.
+
+## Two traps that produce confident wrong answers
+
+1. dry_run_mapping reports whether RULES EXECUTED, not whether the output is
+   valid OCSF. It does not return ocsf_validation_stats or mapped_field_ratio.
+   "10/10 passed" means no rule crashed. It does NOT mean the events conform to
+   OCSF 1.8. Do not report OCSF conformance based on a dry-run.
+2. Mapping definitions seeded from repository defaults diverge from the files on
+   disk as soon as anyone edits them in the UI. get_mapping is the only source of
+   truth for what production actually applies. Never infer live behavior from the
+   JSON files in the repo.
+
+## Editing a mapping: the required sequence
+
+list_mappings -> get_mapping (current rules) -> get_mapping_samples (real events)
+-> dry_run_mapping (with organization_id, to get a non-empty reservoir) -> read
+the output -> commit_mapping with the ack_token and the SAME rules you dry-ran.
+The ack_token expires in 5 minutes and is single-use.
+"""
 
 
 def _build_specs(ack_cache: AckCache) -> dict[str, ToolSpec]:
@@ -72,12 +143,26 @@ def _error_text(message: str, **fields: Any) -> list[TextContent]:
 
 
 def _build_app(settings: Settings, specs: dict[str, ToolSpec]) -> Server:
-    app: Server = Server(SERVER_NAME, version=__version__)
+    app: Server = Server(
+        SERVER_NAME, version=__version__, instructions=SERVER_INSTRUCTIONS
+    )
 
     @app.list_tools()
     async def list_tools() -> list[Tool]:
         return [
-            Tool(name=spec.name, description=spec.description, inputSchema=spec.input_schema)
+            Tool(
+                name=spec.name,
+                description=spec.description,
+                inputSchema=spec.input_schema,
+                annotations=ToolAnnotations(
+                    readOnlyHint=spec.read_only,
+                    # Only meaningful when the tool writes; the MCP default for
+                    # a non-read-only tool is destructive=True, so state it
+                    # explicitly rather than relying on the client's default.
+                    destructiveHint=spec.destructive,
+                    idempotentHint=spec.idempotent,
+                ),
+            )
             for spec in specs.values()
         ]
 
