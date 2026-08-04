@@ -21,13 +21,17 @@ from centralops_mcp.server import SERVER_INSTRUCTIONS, _build_specs
 #: absent: it POSTs but persists nothing, so it is genuinely read-only.
 WRITE_TOOLS = {
     "commit_mapping",
+    "commit_mapping_patch",
     "request_backfill",
     "cancel_backfill_job",
     "reprocess_quarantine",
 }
 
 #: Writes whose effect is not undone by calling them again.
-NON_IDEMPOTENT_TOOLS = {"commit_mapping", "request_backfill"}
+NON_IDEMPOTENT_TOOLS = {"commit_mapping", "commit_mapping_patch", "request_backfill"}
+
+#: POST but read-only: they compute and stage, they never persist.
+READ_ONLY_POSTERS = {"dry_run_mapping", "patch_mapping_rules"}
 
 _MUTATING_CALL = re.compile(r"client\.(post|put|patch|delete)\(")
 
@@ -72,7 +76,7 @@ def test_handlers_that_mutate_are_declared_as_writes(specs):
     added later cannot silently ship as read-only.
     """
     for name, spec in specs.items():
-        if name in WRITE_TOOLS or name == "dry_run_mapping":
+        if name in WRITE_TOOLS or name in READ_ONLY_POSTERS:
             continue
         try:
             source = inspect.getsource(inspect.unwrap(spec.handler))
@@ -85,11 +89,15 @@ def test_handlers_that_mutate_are_declared_as_writes(specs):
         )
 
 
-def test_dry_run_is_read_only_despite_posting(specs):
-    """Regression guard for the one intentional exception to the rule above."""
-    spec = specs["dry_run_mapping"]
-    assert spec.read_only is True
-    assert spec.destructive is False
+@pytest.mark.parametrize("name", sorted(READ_ONLY_POSTERS))
+def test_read_only_posters_are_declared_read_only(specs, name):
+    """The intentional exceptions: they POST, but persist nothing.
+
+    `dry_run_mapping` evaluates rules; `patch_mapping_rules` merges and stages
+    them in this process. Neither writes to the platform.
+    """
+    assert specs[name].read_only is True
+    assert specs[name].destructive is False
 
 
 def test_dry_run_description_disclaims_ocsf_conformance(specs):

@@ -78,6 +78,8 @@ State-changing, and each needs explicit human intent before you call it:
 - commit_mapping — promotes a new mapping version; live collectors pick it up in
   ~30s. NOT idempotent: each call creates another version. Requires an ack_token
   minted by dry_run_mapping for the same definition_id AND the same rules.
+- commit_mapping_patch — same, for the incremental flow. Requires an ack_token
+  from patch_mapping_rules and the same ops.
 - request_backfill — enqueues a re-collection job; costs vendor API quota.
 - cancel_backfill_job — stops a running job.
 - reprocess_quarantine — re-injects a quarantined event into the pipeline.
@@ -96,12 +98,31 @@ dry_run_mapping.
    truth for what production actually applies. Never infer live behavior from the
    JSON files in the repo.
 
-## Editing a mapping: the required sequence
+## Editing a mapping: use the incremental flow
 
-list_mappings -> get_mapping (current rules) -> get_mapping_samples (real events)
--> dry_run_mapping (with organization_id, to get a non-empty reservoir) -> read
-the output -> commit_mapping with the ack_token and the SAME rules you dry-ran.
-The ack_token expires in 5 minutes and is single-use.
+Mappings reach 150-193 rules (~30 KB). Never read or resend the whole array to
+change one rule — that is what exhausts a context window. Four calls:
+
+1. list_mapping_rule_targets — the index: one line per rule, no bodies.
+2. get_mapping_rules — the full body of ONLY the rules you care about, pinned to
+   the version_id from step 1.
+3. patch_mapping_rules — describe the change as ops (replace/remove/insert/
+   append) addressed by absolute index. The merged array is dry-run and staged
+   here; you get back only what changed, plus a before/after comparison.
+4. commit_mapping_patch — same ops + the ack_token. The staged rules are sent
+   for you.
+
+`target` is NOT unique: the same target appears many times gated by different
+`when` predicates, and order decides the winner. Address rules by `index`, and
+pass `expect_target` so a stale index fails loudly instead of editing the wrong
+rule.
+
+To measure before changing anything, call dry_run_mapping with ONLY a
+definition_id — that runs the rules production is applying right now.
+
+The whole-array flow (dry_run_mapping with `rules` -> commit_mapping) still
+works and is the right choice when you are authoring a mapping from scratch.
+Both ack_tokens expire in 5 minutes and are single-use.
 """
 
 

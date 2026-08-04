@@ -19,7 +19,16 @@ def _by_name(specs):
 async def test_list_and_get_mapping(make_client, captured, ack_cache: AckCache):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/mappings":
-            return json_response([{"id": "def-1", "vendor": "sophos"}])
+            return json_response(
+                [{"id": "def-1", "vendor": "sophos", "event_type": "sophos.alert",
+                  "current_version_id": "v-9"}]
+            )
+        if request.url.path == "/api/mappings/def-1/versions/v-9":
+            return json_response({
+                "id": "v-9", "version_number": 4, "commit_message": "fix",
+                "rules": {"rules": [{"target": "normalized.class_uid", "const": 2004}]},
+                "ocsf_validation_stats": {"checked": 10, "valid": 10},
+            })
         if request.url.path == "/api/mappings/def-1":
             return json_response({"id": "def-1", "vendor": "sophos", "versions": []})
         return json_response({}, status=404)
@@ -30,10 +39,49 @@ async def test_list_and_get_mapping(make_client, captured, ack_cache: AckCache):
     async with client as c:
         listing = await specs["list_mappings"].handler(c, include_rules_count=True)
         detail = await specs["get_mapping"].handler(c, definition_id="def-1")
+        full = await specs["get_mapping"].handler(
+            c, definition_id="def-1", include_versions="full"
+        )
 
-    assert listing == [{"id": "def-1", "vendor": "sophos"}]
-    assert detail["id"] == "def-1"
+    assert listing[0]["id"] == "def-1"
     assert captured[0].url.params["include_rules_count"] == "true"
+
+    # Caminho padrão: resolve a versão vigente pelo PONTEIRO e devolve só ela.
+    assert detail["definition"]["id"] == "def-1"
+    assert detail["current_version_resolved"] == "pointer"
+    assert detail["current_version"]["id"] == "v-9"
+    assert detail["current_version"]["rules_count"] == 1
+    assert detail["current_rules"]["rules"][0]["const"] == 2004
+    assert detail["versions"] == [], "histórico não deve vir sem pedir"
+    # ocsf_validation_stats nunca é suprimido: é a única janela para "a versão
+    # em produção emite OCSF válido?"
+    assert detail["current_version"]["ocsf_validation_stats"]["valid"] == 10
+
+    # 'full' continua sendo o passthrough do endpoint antigo.
+    assert full["id"] == "def-1"
+
+
+@pytest.mark.asyncio
+async def test_get_mapping_nunca_baixa_o_historico_por_padrao(make_client, ack_cache: AckCache):
+    """A razão de existir da mudança: 4 versões x 51 regras estouravam o contexto."""
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/api/mappings":
+            return json_response([{"id": "d1", "vendor": "wazuh",
+                                   "current_version_id": "v1"}])
+        if request.url.path == "/api/mappings/d1/versions/v1":
+            return json_response({"id": "v1", "rules": {"rules": []}})
+        return json_response({}, status=404)
+
+    specs = _by_name(mapping_tools.specs(ack_cache))
+    async with make_client(handler) as c:
+        await specs["get_mapping"].handler(c, definition_id="d1")
+
+    assert "/api/mappings/d1" not in paths, (
+        "get_mapping chamou o endpoint que devolve TODAS as versões com corpo integral"
+    )
 
 
 @pytest.mark.asyncio

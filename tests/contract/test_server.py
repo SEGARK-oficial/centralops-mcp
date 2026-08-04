@@ -61,13 +61,19 @@ def test_tool_registry_has_expected_names():
         "get_search_result",
         "list_audit_log",
         "get_query_capabilities",
+        # Mapping navigation at scale (mappings reach 190+ rules)
+        "get_mapping_version",
+        "list_mapping_rule_targets",
+        "get_mapping_rules",
         # Mutating — safe
         "dry_run_mapping",
+        "patch_mapping_rules",
         "request_backfill",
         "reprocess_quarantine",
         "cancel_backfill_job",
         # Destructive — gated
         "commit_mapping",
+        "commit_mapping_patch",
         # Helper
         "wait_for_backfill_job",
         # Sophos-specific
