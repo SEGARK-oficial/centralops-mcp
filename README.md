@@ -111,6 +111,8 @@ What is being polled, from where, and at what cost.
 | `get_mapping` | Definition + full version history. |
 | `diff_mapping_versions` | Structured diff between two versions. |
 | `list_mapping_audit` | Who changed what, when — filterable by action/user/time. |
+| `list_mapping_rule_targets` | Cheap index of one DSL block (`rules`, `preprocess` or `raw_reduction`) — one line per item, no bodies. The map you navigate before patching. |
+| `get_mapping_rules` | Read a slice of a block by index or target, with the `rule_sha256_12` digest that `expect_digest` checks against. |
 
 ### Destinations & routing (ADR-0003/0008)
 
@@ -153,6 +155,7 @@ Where events go, and why one didn't. All of these require an admin token.
 | Tool | Purpose |
 | --- | --- |
 | `dry_run_mapping` | Validate rules against the sample reservoir; issues the `ack_token` needed by `commit_mapping`. |
+| `patch_mapping_rules` | Edit specific items of ONE block (`block`: `rules`, `preprocess` or `raw_reduction`) by index, without ever handling the whole array. Every other block is carried over verbatim. Dry-runs the merge, stages it in-process and issues the `ack_token` for `commit_mapping_patch`. |
 | `request_backfill` | Enqueue a backfill window (≤ 90 days). |
 | `cancel_backfill_job` | Cooperatively cancel a pending/running job. |
 | `reprocess_quarantine` | Reprocess up to 50 quarantined events through the destination routing engine. Idempotent (409/410/422 per event). |
@@ -161,9 +164,12 @@ Where events go, and why one didn't. All of these require an admin token.
 
 | Tool | Purpose |
 | --- | --- |
-| `commit_mapping` | Promote a new mapping version. Requires a fresh `ack_token` from `dry_run_mapping` for the same definition and rules. |
+| `commit_mapping` | Promote a new mapping version from a FULL DSL. Requires a fresh `ack_token` from `dry_run_mapping` for the same definition and rules. |
+| `commit_mapping_patch` | Promote the merge staged by `patch_mapping_rules`. Requires its `ack_token` plus the same definition, `block` and ops — a token staged for `preprocess` does not commit as `rules`. |
 
-`commit_mapping` is the only destructive tool. The `ack_token` expires in 5 minutes
+`commit_mapping` and `commit_mapping_patch` are the only destructive tools. Prefer
+the patch flow: it never rebuilds the DSL dict, which is what once silently deleted
+a mapping's `raw_reduction` in production. The `ack_token` expires in 5 minutes
 and is single-use; the backend re-validates and re-runs the dry-run on commit, so
 the token is defense-in-depth, not the security boundary.
 
