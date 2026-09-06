@@ -24,6 +24,22 @@ from centralops_mcp.tools._base import (
 _DEFAULT_BLOCK = "rules"
 _BLOCKS = ("rules", "preprocess", "raw_reduction")
 
+#: Campo que IDENTIFICA um item dentro de cada bloco, e o nome do assert que o
+#: op envia. ``rules`` e ``preprocess`` exigem ``target`` no engine
+#: (``normalize/engine.py``); ``raw_reduction`` identifica por ``path`` — e o
+#: único item sem ``path`` é o ``drop_nulls`` global, que por isso só pode ser
+#: endereçado por ``expect_digest``.
+_IDENTITY: dict[str, tuple[str, str]] = {
+    "rules": ("target", "expect_target"),
+    "preprocess": ("target", "expect_target"),
+    "raw_reduction": ("path", "expect_path"),
+}
+
+
+def _check_block(block: str) -> None:
+    if block not in _BLOCKS:
+        raise PatchError(f"block inválido: {block!r}. Use um de {list(_BLOCKS)}.")
+
 
 async def _resolve_definition(client: CentralOpsClient, definition_id: str) -> dict[str, Any]:
     """Cabeçalho da definição, sem tocar no corpo das regras.
@@ -76,7 +92,9 @@ def _when_summary(rule: Any) -> Optional[str]:
     return text if len(text) <= 120 else text[:117] + "..."
 
 
-def _index_entry(idx: int, rule: Any, dup_targets: set[str]) -> dict[str, Any]:
+def _index_entry(
+    idx: int, rule: Any, dup_targets: set[str], block: str = _DEFAULT_BLOCK
+) -> dict[str, Any]:
     """Uma linha por regra, o mais enxuta possível.
 
     O índice só vale a pena se for MUITO menor que o array: emitir dez campos
@@ -84,9 +102,37 @@ def _index_entry(idx: int, rule: Any, dup_targets: set[str]) -> dict[str, Any]:
     integral, ou seja, ganho nenhum). Por isso só sai o que é falso-por-omissão:
     chaves ausentes significam "não tem", e ``flags`` compacta num único campo o
     que antes eram cinco booleanos.
+
+    Nos blocos que não são ``rules`` a linha muda de forma porque o que
+    DISTINGUE o item é outro: em ``preprocess`` é o par ``op``/``source`` (o
+    ``target`` é um nome de variável, quase sempre único); em ``raw_reduction``
+    é o ``path`` mais o corte aplicado. E o ``drop_nulls`` global não tem
+    ``path`` — sai com ``t: null`` e o ``digest``, que é o único jeito de
+    endereçá-lo num patch.
     """
     if not isinstance(rule, dict):
         return {"i": idx}
+    if block == "preprocess":
+        entry: dict[str, Any] = {"i": idx, "t": rule.get("target"), "op": rule.get("op")}
+        if rule.get("source"):
+            entry["src"] = rule["source"]
+        return entry
+    if block == "raw_reduction":
+        entry = {"i": idx, "t": rule.get("path")}
+        flags = "".join(
+            letter
+            for letter, present in (
+                ("i", rule.get("max_items") is not None),
+                ("b", rule.get("max_bytes") is not None),
+                ("n", bool(rule.get("drop_nulls"))),
+            )
+            if present
+        )
+        if flags:
+            entry["f"] = flags
+        if rule.get("path") is None:
+            entry["digest"] = _rule_digest(rule)
+        return entry
     target = rule.get("target")
     # Só índice e target. Regras reais são curtas ("target" + "source"), então
     # qualquer campo extra faz o índice custar quase o mesmo que o array —
@@ -126,11 +172,12 @@ def _index_entry(idx: int, rule: Any, dup_targets: set[str]) -> dict[str, Any]:
     return entry
 
 
-def _duplicate_targets(rules: list) -> set[str]:
+def _duplicate_targets(rules: list, block: str = _DEFAULT_BLOCK) -> set[str]:
+    key = _IDENTITY[block][0]
     seen: dict[str, int] = {}
     for rule in rules:
-        if isinstance(rule, dict) and isinstance(rule.get("target"), str):
-            seen[rule["target"]] = seen.get(rule["target"], 0) + 1
+        if isinstance(rule, dict) and isinstance(rule.get(key), str):
+            seen[rule[key]] = seen.get(rule[key], 0) + 1
     return {target for target, count in seen.items() if count > 1}
 
 
@@ -155,9 +202,25 @@ def _summarize_dry_run(dry_run: Any, verbose: bool) -> dict[str, Any]:
     return out
 
 
-def _patch_digest(definition_id: str, base_version_id: Optional[str], ops: Any) -> str:
+def _patch_digest(
+    definition_id: str,
+    base_version_id: Optional[str],
+    ops: Any,
+    block: str = _DEFAULT_BLOCK,
+) -> str:
+    """Liga o ack ao que foi encenado — inclusive ao BLOCO.
+
+    Sem o bloco no digest, um ack obtido patchando ``preprocess`` promoveria um
+    commit declarado como ``rules`` com os mesmos ops: o merge encenado é o
+    mesmo, mas o operador teria confirmado uma coisa e commitado outra.
+    """
     canonical = json.dumps(
-        {"definition_id": definition_id, "base_version_id": base_version_id, "ops": ops},
+        {
+            "definition_id": definition_id,
+            "base_version_id": base_version_id,
+            "block": block,
+            "ops": ops,
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -168,13 +231,23 @@ class PatchError(ValueError):
     """Patch recusado antes de qualquer chamada ao backend."""
 
 
-def _apply_ops(base: list, ops: list) -> tuple[list, list[dict[str, Any]]]:
+def _apply_ops(
+    base: list, ops: list, block: str = _DEFAULT_BLOCK
+) -> tuple[list, list[dict[str, Any]]]:
     """Aplica os ops ao array base. Índices são SEMPRE do array base original.
 
     Resolução em lote, nunca sequencial: aplicar um op de cada vez faria os
     índices seguintes deslizarem e o agente teria de simular a aritmética de
     posição — exatamente o que estas tools existem para evitar.
+
+    A aritmética é a mesma para os três blocos; o que muda é o ASSERT de
+    identidade (``_IDENTITY``): ``expect_target`` em ``rules``/``preprocess``,
+    ``expect_path`` em ``raw_reduction``. ``expect_digest`` (12 hex de sha256
+    do item, como sai no índice) vale em qualquer bloco, sozinho ou junto — e é
+    o único caminho para o ``drop_nulls`` global, que não tem ``path``.
     """
+    _check_block(block)
+    identity_key, expect_key = _IDENTITY[block]
     replaced: dict[int, Any] = {}
     removed: set[int] = set()
     inserts: dict[int, list] = {}
@@ -185,23 +258,44 @@ def _apply_ops(base: list, ops: list) -> tuple[list, list[dict[str, Any]]]:
         if not isinstance(idx, int) or not (0 <= idx < len(base)):
             raise PatchError(
                 f"op {op.get('op')!r}: index {idx!r} fora da faixa 0..{len(base) - 1}. "
-                f"Rode list_mapping_rule_targets para reindexar."
+                f"Rode list_mapping_rule_targets (block={block!r}) para reindexar."
             )
         return idx
 
-    def _check_target(op: dict, idx: int) -> None:
-        expected = op.get("expect_target")
-        if expected is None:
+    def _check_identity(op: dict, idx: int) -> None:
+        expected = op.get(expect_key)
+        expected_digest = op.get("expect_digest")
+        if expected is None and expected_digest is None:
             raise PatchError(
-                f"op {op.get('op')!r} no index {idx}: 'expect_target' é obrigatório. "
-                f"Ele é o assert que impede editar a regra errada quando o índice envelhece."
+                f"op {op.get('op')!r} no index {idx}: {expect_key!r} é obrigatório "
+                f"(ou 'expect_digest'). Ele é o assert que impede editar o item "
+                f"errado quando o índice envelhece."
             )
-        actual = base[idx].get("target") if isinstance(base[idx], dict) else None
-        if actual != expected:
-            raise PatchError(
-                f"patch.stale_index: index {idx} tem target {actual!r}, não {expected!r}. "
-                f"O mapping mudou desde a leitura — reindexe com list_mapping_rule_targets."
-            )
+        item = base[idx] if isinstance(base[idx], dict) else {}
+        if expected is not None:
+            actual = item.get(identity_key)
+            if actual != expected:
+                raise PatchError(
+                    f"patch.stale_index: index {idx} tem {identity_key} {actual!r}, "
+                    f"não {expected!r}. O mapping mudou desde a leitura — reindexe "
+                    f"com list_mapping_rule_targets."
+                )
+        if expected_digest is not None:
+            actual_digest = _rule_digest(base[idx])
+            if actual_digest != expected_digest:
+                raise PatchError(
+                    f"patch.stale_index: index {idx} tem digest {actual_digest!r}, "
+                    f"não {expected_digest!r}. O item mudou desde a leitura — "
+                    f"reindexe com list_mapping_rule_targets."
+                )
+
+    def _payload(op: dict) -> dict:
+        # ``rule`` é o nome histórico; ``item`` existe porque um passo de
+        # preprocess ou um spec de raw_reduction não é uma regra.
+        body = op.get("rule", op.get("item"))
+        if not isinstance(body, dict):
+            raise PatchError(f"op {op.get('op')!r} exige 'rule' (ou 'item') como objeto.")
+        return body
 
     for op in ops:
         if not isinstance(op, dict):
@@ -209,37 +303,35 @@ def _apply_ops(base: list, ops: list) -> tuple[list, list[dict[str, Any]]]:
         kind = op.get("op")
         if kind in ("replace", "remove"):
             idx = _check_index(op, op.get("index"))
-            _check_target(op, idx)
+            _check_identity(op, idx)
             if idx in replaced or idx in removed:
                 raise PatchError(
                     f"patch.conflicting_ops: mais de um op muta o index {idx}."
                 )
+            ident = op.get(expect_key)
             if kind == "replace":
-                if not isinstance(op.get("rule"), dict):
-                    raise PatchError("op 'replace' exige 'rule' (objeto).")
-                replaced[idx] = op["rule"]
+                body = _payload(op)
+                replaced[idx] = body
                 changes.append({"op": "replace", "index": idx,
-                                "target": op.get("expect_target"),
-                                "before": base[idx], "after": op["rule"]})
+                                identity_key: ident,
+                                "before": base[idx], "after": body})
             else:
                 removed.add(idx)
                 changes.append({"op": "remove", "index": idx,
-                                "target": op.get("expect_target"), "before": base[idx]})
+                                identity_key: ident, "before": base[idx]})
         elif kind == "insert":
             idx = op.get("index")
             if not isinstance(idx, int) or not (0 <= idx <= len(base)):
                 raise PatchError(
                     f"op 'insert': index {idx!r} fora da faixa 0..{len(base)}."
                 )
-            if not isinstance(op.get("rule"), dict):
-                raise PatchError("op 'insert' exige 'rule' (objeto).")
-            inserts.setdefault(idx, []).append(op["rule"])
-            changes.append({"op": "insert", "index": idx, "after": op["rule"]})
+            body = _payload(op)
+            inserts.setdefault(idx, []).append(body)
+            changes.append({"op": "insert", "index": idx, "after": body})
         elif kind == "append":
-            if not isinstance(op.get("rule"), dict):
-                raise PatchError("op 'append' exige 'rule' (objeto).")
-            appends.append(op["rule"])
-            changes.append({"op": "append", "after": op["rule"]})
+            body = _payload(op)
+            appends.append(body)
+            changes.append({"op": "append", "after": body})
         else:
             raise PatchError(
                 f"op desconhecido: {kind!r}. Use replace, remove, insert ou append."
@@ -451,12 +543,12 @@ async def _list_mapping_rule_targets(
     version = await _fetch_version(client, definition_id, target_version)
     dsl = _dsl_blocks(version)
     rules = _block_list(dsl, block)
-    dups = _duplicate_targets(rules)
+    dups = _duplicate_targets(rules, block)
 
     # Filtro é a diferença entre "índice grande demais para caber" e "duas
     # linhas". Indexar 153 targets custa quase o mesmo que o array; procurar
     # 'severity' custa quase nada — e é o que o agente realmente faz.
-    entries = [_index_entry(i, r, dups) for i, r in enumerate(rules)]
+    entries = [_index_entry(i, r, dups, block) for i, r in enumerate(rules)]
     matched = len(entries)
     if contains:
         needle = contains.lower()
@@ -464,6 +556,7 @@ async def _list_mapping_rule_targets(
             e for e in entries
             if needle in str(e.get("t") or "").lower()
             or needle in str(e.get("src") or "").lower()
+            or needle in str(e.get("op") or "").lower()
         ]
         matched = len(entries)
     truncated = False
@@ -711,12 +804,17 @@ def _make_patch_handler(ack_cache: AckCache):
         *,
         definition_id: str,
         ops: list[dict[str, Any]],
+        block: str = _DEFAULT_BLOCK,
         base_version_id: str | None = None,
         organization_id: int | None = None,
         compare_baseline: bool = True,
         verbose: bool = False,
         limit: int = 100,
     ) -> Any:
+        try:
+            _check_block(block)
+        except PatchError as exc:
+            return {"error": str(exc)}
         defn = await _resolve_definition(client, definition_id)
         current_id = defn.get("current_version_id")
         base_id = base_version_id or current_id
@@ -725,19 +823,21 @@ def _make_patch_handler(ack_cache: AckCache):
 
         version = await _fetch_version(client, definition_id, base_id)
         dsl = _dsl_blocks(version)
-        base_rules = _block_list(dsl, "rules")
+        base_rules = _block_list(dsl, block)
 
         try:
-            merged_rules, changes = _apply_ops(base_rules, ops)
+            merged_rules, changes = _apply_ops(base_rules, ops, block)
         except PatchError as exc:
             return {"error": str(exc), "base_version_id": base_id,
-                    "rules_count": len(base_rules)}
+                    "block": block, "count": len(base_rules)}
 
-        # Preserva TODO bloco top-level que não seja ``rules`` — inclusive
+        # Preserva TODO bloco top-level que não seja o editado — inclusive
         # desconhecidos. Reconstruir o dict foi o que apagou o ``raw_reduction``
-        # do sophos.detection em produção.
+        # do sophos.detection em produção. Isto vale igual quando o bloco
+        # editado é o próprio ``preprocess``: ``rules`` e ``raw_reduction``
+        # atravessam intactos.
         merged = dict(dsl)
-        merged["rules"] = merged_rules
+        merged[block] = merged_rules
 
         body: dict[str, Any] = {
             "rules": merged, "limit": limit,
@@ -753,17 +853,29 @@ def _make_patch_handler(ack_cache: AckCache):
             base_body["rules"] = dsl
             baseline = await client.post("/mappings/dry-run", json=base_body)
 
-        digest = _patch_digest(definition_id, base_id, ops)
+        digest = _patch_digest(definition_id, base_id, ops, block)
         ack_token = ack_cache.issue_patch(
             definition_id, merged, base_version_id=base_id, patch_digest=digest
         )
 
-        return {
+        out: dict[str, Any] = {
             "definition_id": definition_id,
             "base_version_id": base_id,
             "base_is_current": str(base_id) == str(current_id),
-            "rules_count_before": len(base_rules),
-            "rules_count_after": len(merged_rules),
+            "block": block,
+            "count_before": len(base_rules),
+            "count_after": len(merged_rules),
+            # Os blocos que NÃO foram tocados, com tamanho: é a prova, no
+            # próprio retorno, de que atravessaram.
+            "untouched_blocks": {
+                b: len(_block_list(merged, b)) for b in _BLOCKS if b != block
+            },
+        }
+        if block == _DEFAULT_BLOCK:
+            # Nomes históricos, mantidos para quem já lê a resposta.
+            out["rules_count_before"] = len(base_rules)
+            out["rules_count_after"] = len(merged_rules)
+        out.update({
             # Só o que mudou. O array completo fica na memória deste processo
             # até o commit — nunca entra no contexto do modelo.
             "changes": changes,
@@ -772,11 +884,12 @@ def _make_patch_handler(ack_cache: AckCache):
             "ack_token": ack_token,
             "ack_token_note": (
                 "Pass this ack_token to commit_mapping_patch with the SAME "
-                "definition_id and ops within 5 minutes. The merged rules are "
-                "staged server-side in this MCP process — you never need to "
-                "resend them."
+                "definition_id, block and ops within 5 minutes. The merged DSL "
+                "is staged server-side in this MCP process — you never need to "
+                "resend it."
             ),
-        }
+        })
+        return out
 
     return _patch_mapping_rules
 
@@ -789,12 +902,18 @@ def _make_commit_patch_handler(ack_cache: AckCache):
         ops: list[dict[str, Any]],
         commit_message: str,
         ack_token: str,
+        block: str = _DEFAULT_BLOCK,
         base_version_id: str | None = None,
     ) -> Any:
+        try:
+            _check_block(block)
+        except PatchError as exc:
+            return {"error": str(exc)}
         digest = _patch_digest(
             definition_id,
             base_version_id or _peek_base(ack_cache, ack_token),
             ops,
+            block,
         )
         entry = ack_cache.consume_patch(ack_token, definition_id, digest)
         payload: dict[str, Any] = {
@@ -1038,6 +1157,12 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
                 "`ambiguous: true` share a target with another rule — for those, "
                 "`when_summary` is the only thing that tells them apart. ALWAYS "
                 "address rules by `index`, never by `target`.\n\n"
+                "Other blocks index differently: `preprocess` lines carry `op` "
+                "and `src` (what tells steps apart); `raw_reduction` lines put "
+                "the `path` in `t` and pack i=max_items, b=max_bytes, "
+                "n=drop_nulls into `f`. The global drop_nulls spec has no path "
+                "(`t: null`) and shows a `digest` instead — that digest is how "
+                "you address it in patch_mapping_rules (`expect_digest`).\n\n"
                 "`rule_sha256_12` is a precondition check for editing, not a "
                 "cryptographic identity."
             ),
@@ -1199,33 +1324,51 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
         ToolSpec(
             name="patch_mapping_rules",
             description=(
-                "Change specific rules WITHOUT ever handling the whole array. "
-                "This is how you edit a 193-rule mapping: describe the ops, and "
-                "the merged result is dry-run and staged in this MCP process. "
-                "Read-only — it stages and measures, it does not commit.\n\n"
-                "Ops address the BASE array by absolute index (from "
-                "list_mapping_rule_targets) and are resolved as a BATCH, so "
-                "indexes never shift under you:\n"
-                "  replace {index, expect_target, rule} — swap the whole rule object\n"
-                "  remove  {index, expect_target}\n"
+                "Change specific items of ONE DSL block WITHOUT ever handling "
+                "the whole array. This is how you edit a 193-rule mapping — or "
+                "its 7 preprocess steps: describe the ops, and the merged result "
+                "is dry-run and staged in this MCP process. Read-only — it "
+                "stages and measures, it does not commit.\n\n"
+                "`block` picks what you edit: `rules` (default), `preprocess` "
+                "or `raw_reduction`. Ops address the BASE array of that block by "
+                "absolute index (from list_mapping_rule_targets with the same "
+                "`block`) and are resolved as a BATCH, so indexes never shift "
+                "under you:\n"
+                "  replace {index, <assert>, rule} — swap the whole item object\n"
+                "  remove  {index, <assert>}\n"
                 "  insert  {index, rule} — insert BEFORE base[index]\n"
-                "  append  {rule}\n\n"
-                "`expect_target` is mandatory on replace/remove and is the "
-                "assert that stops you editing the wrong rule when the index has "
-                "aged: a mismatch fails the patch instead of corrupting the "
-                "mapping. Two ops touching the same index is also an error.\n\n"
-                "Blocks other than `rules` (preprocess, raw_reduction, and any "
-                "unknown ones) are carried over VERBATIM — rebuilding the dict "
-                "is what once silently deleted a mapping's raw_reduction in "
-                "production.\n\n"
+                "  append  {rule}\n"
+                "(`item` is accepted as an alias of `rule`.)\n\n"
+                "<assert> is mandatory on replace/remove and is what stops you "
+                "editing the wrong item when the index has aged — a mismatch "
+                "fails the patch instead of corrupting the mapping:\n"
+                "  rules / preprocess : expect_target\n"
+                "  raw_reduction      : expect_path\n"
+                "  any block          : expect_digest (the `digest`/sha256_12 "
+                "shown by the index; the ONLY way to address the global "
+                "drop_nulls spec, which has no path)\n"
+                "Two ops touching the same index is also an error.\n\n"
+                "Every block you did NOT name (and any unknown block) is carried "
+                "over VERBATIM — rebuilding the dict is what once silently "
+                "deleted a mapping's raw_reduction in production. The response "
+                "lists the untouched blocks with their sizes so you can see "
+                "they survived.\n\n"
                 "The response returns only what CHANGED, plus the dry-run of the "
                 "result and (by default) of the unmodified base for comparison. "
-                "The merged array stays server-side; commit it with "
-                "commit_mapping_patch and the same ops."
+                "The merged DSL stays server-side; commit it with "
+                "commit_mapping_patch and the same block and ops."
             ),
             input_schema=_object(
                 properties={
                     "definition_id": _string("Mapping definition id (uuid)."),
+                    "block": {
+                        "type": "string",
+                        "enum": list(_BLOCKS),
+                        "description": (
+                            "Which DSL block the ops edit. Default 'rules'. Use "
+                            "the same value you passed to list_mapping_rule_targets."
+                        ),
+                    },
                     "ops": {
                         "type": "array",
                         "minItems": 1,
@@ -1258,11 +1401,12 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
             description=(
                 "Promote the patch staged by patch_mapping_rules. Destructive: "
                 "live collectors pick up the new rules within ~30s.\n\n"
-                "Resend the SAME definition_id and ops plus the ack_token — the "
-                "merged rules are already staged here, so you never resend 193 "
-                "rules. The token is single-use, expires in 5 minutes, and is "
-                "bound to the exact ops AND the base version they were computed "
-                "against.\n\n"
+                "Resend the SAME definition_id, block and ops plus the ack_token "
+                "— the merged DSL is already staged here, so you never resend "
+                "193 rules. The token is single-use, expires in 5 minutes, and "
+                "is bound to the exact block, ops AND the base version they "
+                "were computed against: a token staged for `preprocess` does "
+                "not commit as `rules`.\n\n"
                 "The commit carries that base version so the backend can refuse "
                 "(409) if someone else changed the mapping meanwhile. On 409, "
                 "re-read the index and redo the edit — do NOT retry blindly, "
@@ -1273,6 +1417,11 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
             input_schema=_object(
                 properties={
                     "definition_id": _string("Mapping definition id (uuid)."),
+                    "block": {
+                        "type": "string",
+                        "enum": list(_BLOCKS),
+                        "description": "The SAME block passed to patch_mapping_rules. Default 'rules'.",
+                    },
                     "ops": {
                         "type": "array",
                         "minItems": 1,
