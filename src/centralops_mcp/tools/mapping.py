@@ -658,6 +658,17 @@ async def _get_mapping_samples(
     )
 
 
+async def _list_mapping_key_sources(
+    client: CentralOpsClient,
+    *,
+    organization_id: int | None = None,
+) -> Any:
+    return await client.get(
+        "/mappings/key-sources",
+        params={"organization_id": organization_id},
+    )
+
+
 async def _discover_mapping_fields(
     client: CentralOpsClient,
     *,
@@ -1442,5 +1453,41 @@ def specs(ack_cache: AckCache) -> list[ToolSpec]:
             read_only=False,
             destructive=True,
             idempotent=False,
+        ),
+        ToolSpec(
+            name="list_mapping_key_sources",
+            description=(
+                "The field INVENTORY of an organization: the dotted paths it "
+                "actually produces, for whoever writes a rule over the envelope "
+                "(correlation group_by_field / where.field, enrichment key.source). "
+                "This is the tool that turns 'guess a path' into 'pick a path that "
+                "exists' — the single most common silent failure in correlation is "
+                "a field that compiles and never resolves.\n\n"
+                "Returns organization_id, from_active_mappings, roots and "
+                "suggestions. Each suggestion is {path, rule_count, vendors, kind} "
+                "where kind is: 'mapped' (the org really produces it, via active "
+                "mappings), 'catalog' (nothing is connected yet, this is the common "
+                "OCSF catalog) or 'envelope' (a _centralops.* label the routing and "
+                "the in-flight engine accept). READ from_active_mappings before "
+                "trusting the list as the customer's reality: false means you are "
+                "looking at the catalog, not at their data.\n\n"
+                "'roots' are the valid first segments of an envelope path "
+                "(_centralops, normalized, raw). An in-flight rule whose path does "
+                "not start with one of them is refused by the API — and if it ever "
+                "got through, it would be counted as a match and produce no "
+                "Detection, silently."
+            ),
+            input_schema=_object(
+                properties={
+                    "organization_id": _integer(
+                        (
+                            "Organization whose inventory to read. Omitted = the "
+                            "caller's own org."
+                        ),
+                        minimum=1,
+                    ),
+                },
+            ),
+            handler=_list_mapping_key_sources,
         ),
     ]

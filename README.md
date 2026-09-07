@@ -14,7 +14,7 @@
 ---
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes a
-curated subset of the CentralOps HTTP API as **52 typed tools**, so an AI agent
+curated subset of the CentralOps HTTP API as **58 typed tools**, so an AI agent
 (Claude Code, or any MCP client) can operate the pipeline like a SOC engineer:
 inspect what a vendor is actually sending, author and dry-run mapping rules, follow
 an event's delivery lineage, and reprocess quarantined events — with the destructive
@@ -64,7 +64,7 @@ Restart the client and run `/mcp` (Claude Code) to confirm the tools are listed.
 
 ## Tools
 
-52 tools, grouped by what they let the agent see or do. Everything is read-only
+58 tools, grouped by what they let the agent see or do. Everything is read-only
 except the five tools listed under **Mutating** and **Destructive**.
 
 ### Vendor-side visibility
@@ -102,6 +102,7 @@ What is being polled, from where, and at what cost.
 | `list_quarantine` | Quarantined events — filter by vendor, error_kind, lifecycle `status` (pending/reprocessed/all), integration. |
 | `list_drift_fields` | Unknown raw fields observed by the drift sampler (`status`: new/ignored/mapped). |
 | `discover_mapping_fields` | Fields already discovered for a mapping — JMESPath autocomplete source. |
+| `list_mapping_key_sources` | The org's field **inventory**: which dotted paths it really produces, each tagged `mapped` / `catalog` / `envelope` plus the vendors behind it. The input to any rule written over the envelope. |
 
 ### Mappings catalog & history
 
@@ -130,11 +131,26 @@ Where events go, and why one didn't. All of these require an admin token.
 | `get_routes_topology` / `get_routes_flow` | Route→destination topology and live flow graph. |
 | `get_route_health` / `get_route_metrics` | Per-route matched/routed/dropped counters and series. |
 
+### Correlation rules (Enterprise) — *"is this rule running, and would it match?"*
+
+`list_detections` shows the alerts a correlation rule produced; these show the rule
+itself. Read-only: authoring stays in the console, where the flow graph, the field
+inventory and the sample preview sit side by side. On a Community deployment these
+routes do not exist and every call is a 404.
+
+| Tool | Purpose |
+| --- | --- |
+| `list_correlation_rules` | The rules, with mode (`batch` / `inflight`), type (`threshold` / `sequence` with its legs), filters and caps. Pass `include_inflight_status=true` to learn which enabled rules are **not** being evaluated — the default `false` means "not calculated", never "running". |
+| `get_correlation_rule` | One rule in full, including each sequence leg's own `join_path`. |
+| `get_correlation_rule_metrics` | 24 h counters for one rule: `matches`, `overflow` (matches dropped by the per-cycle key cap) and attributable error reasons. Every metric is nullable and **null means "read failed", not zero**. |
+| `get_correlation_limits` | Why an enabled in-flight rule may not run: per-cycle cap, how many rules were truncated, how many do not compile, and whether their detections reach any destination. |
+| `preview_correlation_rule` | Evaluate candidate clauses against **real samples**, persisting nothing. Distinguishes "field not found" from "value did not match". Always pass `eval_mode` — the endpoint default is the opposite of the rule-creation default. |
+
 ### Detections, dashboard & history
 
 | Tool | Purpose |
 | --- | --- |
-| `list_detections` / `get_detection` | In-pipeline detections (status: open/ack/closed, OCSF severity). |
+| `list_detections` / `get_detection` | In-pipeline detections (status: open/ack/closed, OCSF severity). `source` tells you which engine produced it: `correlation`, `scheduled_query` or `live_query`. |
 | `get_dashboard_summary` | The UI's opening dashboard: KPIs + top-N buckets, org/platform/period filters. |
 | `list_scheduled_queries` / `get_scheduled_query_history` | Scheduled queries and their run history. |
 | `list_search_history` / `get_search_result` | Saved search runs and their results. |
@@ -236,7 +252,7 @@ The trailing `sleep` keeps stdin open long enough for the second response:
       centralops-mcp:dev
 ```
 
-You should see two JSON-RPC responses; the second lists all 52 tools with their
+You should see two JSON-RPC responses; the second lists all 58 tools with their
 schemas.
 
 ## Contributing

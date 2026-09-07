@@ -31,7 +31,7 @@ WRITE_TOOLS = {
 NON_IDEMPOTENT_TOOLS = {"commit_mapping", "commit_mapping_patch", "request_backfill"}
 
 #: POST but read-only: they compute and stage, they never persist.
-READ_ONLY_POSTERS = {"dry_run_mapping", "patch_mapping_rules"}
+READ_ONLY_POSTERS = {"dry_run_mapping", "patch_mapping_rules", "preview_correlation_rule"}
 
 _MUTATING_CALL = re.compile(r"client\.(post|put|patch|delete)\(")
 
@@ -94,7 +94,9 @@ def test_read_only_posters_are_declared_read_only(specs, name):
     """The intentional exceptions: they POST, but persist nothing.
 
     `dry_run_mapping` evaluates rules; `patch_mapping_rules` merges and stages
-    them in this process. Neither writes to the platform.
+    them in this process; `preview_correlation_rule` evaluates candidate clauses
+    against samples and creates no Detection, no counter and no dedup entry.
+    None of them writes to the platform.
     """
     assert specs[name].read_only is True
     assert specs[name].destructive is False

@@ -18,6 +18,7 @@ from centralops_mcp.client import CentralOpsAPIError, CentralOpsClient
 from centralops_mcp.tools._base import ToolSpec
 from centralops_mcp.tools import backfill as backfill_tools
 from centralops_mcp.tools import collectors as collectors_tools
+from centralops_mcp.tools import correlation as correlation_tools
 from centralops_mcp.tools import dashboard as dashboard_tools
 from centralops_mcp.tools import destinations as destinations_tools
 from centralops_mcp.tools import detections as detections_tools
@@ -54,6 +55,12 @@ them to destinations (syslog, Splunk, Elastic, ClickHouse, Security Lake, ...).
 - "How is this vendor normalized?" -> list_mappings, then get_mapping.
 - "Did normalization fail?" -> list_quarantine, get_quarantine_event.
 - "Where did this event go?" -> get_event_lineage, list_destination_lineage.
+- "Which rule raised this alert, and is it even running?" -> list_correlation_rules
+  (pass include_inflight_status=true), get_correlation_rule,
+  get_correlation_rule_metrics, get_correlation_limits. Enterprise-only: on a
+  Community deployment these routes are 404.
+- "Would this filter match anything?" -> preview_correlation_rule (real samples,
+  nothing persisted). "Which field paths exist here?" -> list_mapping_key_sources.
 - "Is data being dropped or delayed?" -> get_route_health, list_destination_dlq,
   list_collection_state (collection lag).
 
@@ -141,6 +148,7 @@ def _build_specs(ack_cache: AckCache) -> dict[str, ToolSpec]:
         *detections_tools.specs(),
         *dashboard_tools.specs(),
         *queries_tools.specs(),
+        *correlation_tools.specs(),
     ]
     by_name: dict[str, ToolSpec] = {}
     for spec in specs:
