@@ -78,6 +78,16 @@ def test_tool_registry_has_expected_names():
         "wait_for_backfill_job",
         # Sophos-specific
         "get_sophos_licenses",
+        # Correlation rules (Enterprise-only routes) — read + preview.
+        # Authoring stays in the console: an in-flight rule with a bad `where`
+        # emits a Detection per event until someone notices.
+        "list_correlation_rules",
+        "get_correlation_rule",
+        "get_correlation_rule_metrics",
+        "get_correlation_limits",
+        "preview_correlation_rule",
+        # Field inventory — the input to any rule written over the envelope
+        "list_mapping_key_sources",
     }
     assert set(specs.keys()) == expected
 

@@ -18,6 +18,7 @@ from centralops_mcp.client import CentralOpsAPIError, CentralOpsClient
 from centralops_mcp.tools._base import ToolSpec
 from centralops_mcp.tools import backfill as backfill_tools
 from centralops_mcp.tools import collectors as collectors_tools
+from centralops_mcp.tools import correlation as correlation_tools
 from centralops_mcp.tools import dashboard as dashboard_tools
 from centralops_mcp.tools import destinations as destinations_tools
 from centralops_mcp.tools import detections as detections_tools
@@ -141,6 +142,7 @@ def _build_specs(ack_cache: AckCache) -> dict[str, ToolSpec]:
         *detections_tools.specs(),
         *dashboard_tools.specs(),
         *queries_tools.specs(),
+        *correlation_tools.specs(),
     ]
     by_name: dict[str, ToolSpec] = {}
     for spec in specs:
