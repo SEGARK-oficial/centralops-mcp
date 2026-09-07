@@ -140,9 +140,9 @@ routes do not exist and every call is a 404.
 
 | Tool | Purpose |
 | --- | --- |
-| `list_correlation_rules` | The rules, with mode (`batch` / `inflight`), type (`threshold` / `sequence` with its legs), filters and caps. Pass `include_inflight_status=true` to learn which enabled rules are **not** being evaluated — the default `false` means "not calculated", never "running". |
+| `list_correlation_rules` | The rules, with mode (`batch` / `inflight`), type (`threshold` / `sequence` with its legs / `absence` with its deadline and forget-after), filters and caps. Pass `include_inflight_status=true` to learn which enabled rules are **not** being evaluated — the default `false` means "not calculated", never "running". |
 | `get_correlation_rule` | One rule in full, including each sequence leg's own `join_path`. |
-| `get_correlation_rule_metrics` | 24 h counters for one rule: `matches`, `overflow` (matches dropped by the per-cycle key cap) and attributable error reasons. Every metric is nullable and **null means "read failed", not zero**. |
+| `get_correlation_rule_metrics` | 24 h counters for one rule: `matches`, `overflow` (matches dropped by the per-cycle key cap) and attributable error reasons; for absence rules also the last tick's `absence_tracked` / `absence_silent` / `absence_state`. Every metric is nullable and **null means "read failed", not zero**. |
 | `get_correlation_limits` | Why an enabled in-flight rule may not run: per-cycle cap, how many rules were truncated, how many do not compile, and whether their detections reach any destination. |
 | `preview_correlation_rule` | Evaluate candidate clauses against **real samples**, persisting nothing. Distinguishes "field not found" from "value did not match". Always pass `eval_mode` — the endpoint default is the opposite of the rule-creation default. |
 
